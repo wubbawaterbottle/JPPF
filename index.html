@@ -691,12 +691,17 @@ function renderDashboard() {
     grouped[q].push(j);
   });
 
+  // Show "No date" jobs first, then quarters in reverse order
   var qOrder = quarters.slice().reverse();
-  qOrder.forEach(function(q) {
-    if (!grouped[q] || !grouped[q].length) return;
+  var allGroups = [];
+  if (grouped["Unknown"] && grouped["Unknown"].length) allGroups.push("Unknown");
+  qOrder.forEach(function(q) { if (grouped[q] && grouped[q].length) allGroups.push(q); });
+
+  allGroups.forEach(function(q) {
     var qGross = 0;
     grouped[q].forEach(function(j) { qGross += parseFloat(j.GrossTotal) || 0; });
-    html += '<tr class="section-row"><td colspan="8">' + q + ' — ' + fmt$(qGross) + '</td></tr>';
+    var label = q === "Unknown" ? "No date" : q;
+    html += '<tr class="section-row"><td colspan="8">' + label + ' — ' + fmt$(qGross) + '</td></tr>';
 
     grouped[q].forEach(function(j) {
       var stages = pipelineStages();
