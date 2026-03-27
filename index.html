@@ -697,8 +697,14 @@ function renderDashboard() {
     grouped[q].push(j);
   });
 
-  // Show special groups first, then quarters in reverse order
-  var qOrder = quarters.slice().reverse();
+  // Show special groups first, then quarters sorted newest-first
+  var qOrder = quarters.slice().sort(function(a, b) {
+    // Parse "Q1 2025" into sortable value
+    var pa = a.match(/Q(\d)\s+(\d{4})/), pb = b.match(/Q(\d)\s+(\d{4})/);
+    if (!pa || !pb) return 0;
+    var va = parseInt(pa[2]) * 10 + parseInt(pa[1]), vb = parseInt(pb[2]) * 10 + parseInt(pb[1]);
+    return vb - va;
+  });
   var allGroups = [];
   if (grouped["NoDate"] && grouped["NoDate"].length) allGroups.push("NoDate");
   if (grouped["Unrecognized"] && grouped["Unrecognized"].length) allGroups.push("Unrecognized");
