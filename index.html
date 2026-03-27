@@ -386,8 +386,10 @@ tr.section-row td {
 
 /* ---- PRINT ---- */
 @media print {
-  body { background: #fff; }
-  .sidebar, .page-header-actions, .btn, .filters, .alert-bar, .toast, .metric-card, .page-header { display: none !important; }
+  @page { margin: 0.5in; size: auto; }
+  body { background: #fff; -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  .sidebar, .page-header-actions, .btn, .filters, .alert-bar, .toast, .metric-card, .page-header, .nav-item { display: none !important; }
+  .app { display: block !important; }
   .main { padding: 0; overflow: visible; }
   .invoice-page { box-shadow: none; padding: 20px; }
   .contract-page { box-shadow: none; padding: 20px; }
@@ -515,18 +517,22 @@ function fmtDate(d) {
 }
 
 function getQuarter(dateStr) {
-  if (!dateStr) return "Unknown";
+  if (!dateStr) return "NoDate";
   var parts = String(dateStr).split("-");
-  if (parts.length < 2) return "Unknown";
+  if (parts.length < 2) return "NoDate";
   var y = parts[0], m = parseInt(parts[1]);
   var q = m <= 3 ? "Q1" : m <= 6 ? "Q2" : m <= 9 ? "Q3" : "Q4";
-  return q + " " + y;
+  var qLabel = q + " " + y;
+  // Check if this quarter exists in settings
+  var quarters = (S.settings.quarters && S.settings.quarters.length) ? S.settings.quarters : [];
+  if (quarters.length && quarters.indexOf(qLabel) === -1) return "Unrecognized";
+  return qLabel;
 }
 
 function getQuarters() {
   if (S.settings.quarters && S.settings.quarters.length) return S.settings.quarters;
   var qs = {};
-  S.jobs.forEach(function(j) { var q = getQuarter(j.EventDate); if (q !== "Unknown") qs[q] = 1; });
+  S.jobs.forEach(function(j) { var q = getQuarter(j.EventDate); if (q !== "NoDate" && q !== "Unrecognized") qs[q] = 1; });
   return Object.keys(qs).sort();
 }
 
@@ -620,7 +626,7 @@ function renderDashboard() {
     var jYear = j.EventDate ? parseInt(String(j.EventDate).split("-")[0]) : 0;
     if (jYear === currentYear) {
       ytdGross += parseFloat(j.GrossTotal) || 0;
-      ytdNet += parseFloat(j.NetReceived) || 0;
+      ytdNet += getJobTotalReceived(j.ID);
       jobCount++;
     }
     if (needsAction(j)) actionItems++;
@@ -632,7 +638,7 @@ function renderDashboard() {
     qMetrics[q] = { gross: 0, net: 0, count: 0 };
     jobsForQuarter(q).forEach(function(j) {
       qMetrics[q].gross += parseFloat(j.GrossTotal) || 0;
-      qMetrics[q].net += parseFloat(j.NetReceived) || 0;
+      qMetrics[q].net += getJobTotalReceived(j.ID);
       qMetrics[q].count++;
     });
   });
@@ -691,16 +697,17 @@ function renderDashboard() {
     grouped[q].push(j);
   });
 
-  // Show "No date" jobs first, then quarters in reverse order
+  // Show special groups first, then quarters in reverse order
   var qOrder = quarters.slice().reverse();
   var allGroups = [];
-  if (grouped["Unknown"] && grouped["Unknown"].length) allGroups.push("Unknown");
+  if (grouped["NoDate"] && grouped["NoDate"].length) allGroups.push("NoDate");
+  if (grouped["Unrecognized"] && grouped["Unrecognized"].length) allGroups.push("Unrecognized");
   qOrder.forEach(function(q) { if (grouped[q] && grouped[q].length) allGroups.push(q); });
 
   allGroups.forEach(function(q) {
     var qGross = 0;
     grouped[q].forEach(function(j) { qGross += parseFloat(j.GrossTotal) || 0; });
-    var label = q === "Unknown" ? "No date" : q;
+    var label = q === "NoDate" ? "No date assigned" : q === "Unrecognized" ? "Quarter not created — add it in Settings" : q;
     html += '<tr class="section-row"><td colspan="8">' + label + ' — ' + fmt$(qGross) + '</td></tr>';
 
     grouped[q].forEach(function(j) {
@@ -713,7 +720,11 @@ function renderDashboard() {
       pipHtml += '<span class="pip-label" onclick="cyclePipeline(\'' + j.ID + '\')">' + getPipeLabel(j) + '</span></div>';
 
       var taxCls = j.TaxStatus === "Taxable" ? "taxable" : j.TaxStatus === "Non-Profit" ? "nonprofit" : "unknown";
-      var payCls = j.PaymentStatus === "Paid" ? "paid" : j.PaymentStatus === "Unpaid" ? "unpaid" : "deposit";
+      var jobNetFromPayments = getJobTotalReceived(j.ID);
+      var jobGross = parseFloat(j.GrossTotal) || 0;
+      var dynamicPayStatus = j.PaymentResolved ? "resolved" : jobGross === 0 ? "" : jobNetFromPayments >= jobGross ? "paid" : jobNetFromPayments > 0 ? "partial" : "unpaid";
+      var dynamicPayLabel = j.PaymentResolved ? "Resolved" : jobGross === 0 ? "—" : jobNetFromPayments >= jobGross ? "Paid" : jobNetFromPayments > 0 ? "Partial" : "Unpaid";
+      var payCls = dynamicPayStatus === "paid" ? "paid" : dynamicPayStatus === "partial" ? "deposit" : dynamicPayStatus === "resolved" ? "signed" : "unpaid";
 
       html += '<tr class="clickable" onclick="openJobDetail(\'' + j.ID + '\')">'
         + '<td><strong>' + (j.JobName || j.ClientName || "—") + '</strong>'
@@ -723,8 +734,8 @@ function renderDashboard() {
         + '<td><span class="badge badge-' + taxCls + '">' + (j.TaxStatus || "Unknown") + '</span></td>'
         + '<td>' + pipHtml + '</td>'
         + '<td class="money">' + fmt$(j.GrossTotal) + '</td>'
-        + '<td class="money">' + fmt$(j.NetReceived) + '</td>'
-        + '<td><span class="badge badge-' + payCls + '">' + (j.PaymentStatus || "Unpaid") + '</span></td>'
+        + '<td class="money" style="color:var(--green-fg);">' + fmt$(jobNetFromPayments) + '</td>'
+        + '<td>' + (dynamicPayLabel !== "—" ? '<span class="badge badge-' + payCls + '">' + dynamicPayLabel + '</span>' : '—') + '</td>'
         + '</tr>';
     });
   });
@@ -758,11 +769,17 @@ function renderJobDetail(jobId) {
     + '<button class="btn btn-sm btn-danger" onclick="deleteJob(\'' + jobId + '\')">Delete</button>'
     + '</div></div>';
 
-  // Job info cards
+  // Job info cards — compute from payment ledger
+  var allJobPayments = getJobPayments(jobId);
+  var jobNetFromLedger = 0, jobFeesFromLedger = 0;
+  allJobPayments.forEach(function(p) {
+    jobNetFromLedger += parseFloat(p.NetAmount) || 0;
+    jobFeesFromLedger += parseFloat(p.Fees) || 0;
+  });
   html += '<div class="metrics">';
   html += '<div class="metric-card"><div class="metric-label">Gross total</div><div class="metric-value">' + fmt$(job.GrossTotal) + '</div></div>';
-  html += '<div class="metric-card"><div class="metric-label">Net received</div><div class="metric-value">' + fmt$(job.NetReceived) + '</div></div>';
-  html += '<div class="metric-card"><div class="metric-label">Processing fees</div><div class="metric-value">' + fmt$(job.ProcessingFees) + '</div></div>';
+  html += '<div class="metric-card"><div class="metric-label">Net received</div><div class="metric-value" style="color:var(--green-fg);">' + fmt$(jobNetFromLedger) + '</div></div>';
+  html += '<div class="metric-card"><div class="metric-label">Processing fees</div><div class="metric-value">' + fmt$(jobFeesFromLedger) + '</div></div>';
   var expTotal = 0; expenses.forEach(function(e) { expTotal += parseFloat(e.Amount) || 0; });
   html += '<div class="metric-card"><div class="metric-label">Job expenses</div><div class="metric-value">' + fmt$(expTotal) + '</div></div>';
   html += '</div>';
@@ -775,8 +792,7 @@ function renderJobDetail(jobId) {
   var details = [
     ["Service", job.ServiceType], ["Event date", fmtDate(job.EventDate)],
     ["Job location", job.JobLocation], ["Client location", job.ClientLocation],
-    ["Tax status", job.TaxStatus], ["Tax rate", job.TaxRate ? job.TaxRate + "%" : "—"],
-    ["Payment method", job.PaymentMethod], ["Pipeline", job.PipelineStatus]
+    ["Tax status", job.TaxStatus], ["Tax rate", job.TaxRate ? job.TaxRate + "%" : "—"]
   ];
   details.forEach(function(d) {
     html += '<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid var(--border);font-size:13px;">'
@@ -849,12 +865,13 @@ function renderJobDetail(jobId) {
   // Job payments
   var jobPayments = getJobPayments(jobId);
   var payTotal = 0; jobPayments.forEach(function(p) { payTotal += parseFloat(p.NetAmount) || 0; });
-  var remaining = (parseFloat(job.GrossTotal) || 0) - payTotal;
+  var remaining = Math.max(0, (parseFloat(job.GrossTotal) || 0) - payTotal);
   var isResolved = job.PaymentResolved || false;
   var resolvedReason = job.ResolvedReason || "";
 
   var payStatusHtml = '';
-  if (remaining <= 0) {
+  var jobGrossTotal = parseFloat(job.GrossTotal) || 0;
+  if (jobGrossTotal > 0 && payTotal >= jobGrossTotal) {
     payStatusHtml = ' <span style="font-size:13px;font-weight:400;color:var(--green-fg);">(paid in full)</span>';
   } else if (isResolved) {
     payStatusHtml = ' <span style="font-size:13px;font-weight:400;color:var(--purple-fg);">(resolved — ' + resolvedReason + ')</span>';
@@ -932,7 +949,7 @@ function renderPayments() {
 
   var totalBilled = 0;
   S.jobs.forEach(function(j) { totalBilled += parseFloat(j.GrossTotal) || 0; });
-  var totalOutstanding = totalBilled - totalReceived;
+  var totalOutstanding = Math.max(0, totalBilled - totalReceived);
 
   // Jobs with outstanding balances
   var outstandingJobs = S.jobs.filter(function(j) {
@@ -940,7 +957,7 @@ function renderPayments() {
     if (gross === 0) return false;
     if (j.PaymentResolved) return false;
     var received = getJobTotalReceived(j.ID);
-    return received < gross;
+    return received < gross && !j.PaymentResolved;
   });
 
   var resolvedJobs = S.jobs.filter(function(j) {
@@ -987,7 +1004,7 @@ function renderPayments() {
     outstandingJobs.forEach(function(j) {
       var gross = parseFloat(j.GrossTotal) || 0;
       var received = getJobTotalReceived(j.ID);
-      var rem = gross - received;
+      var rem = Math.max(0, gross - received);
       html += '<tr class="clickable" onclick="openJobDetail(\'' + j.ID + '\')">'
         + '<td><strong>' + (j.JobName || j.ClientName || "—") + '</strong>'
         + (j.ClientName && j.JobName ? '<br><span style="color:var(--fg3);font-size:11px;">' + j.ClientName + '</span>' : '') + '</td>'
@@ -1042,7 +1059,7 @@ function renderPayments() {
       var typeCls = p.Type === "Deposit" ? "deposit" : p.Type === "Final Payment" ? "paid" : "partial";
       html += '<tr>'
         + '<td>' + fmtDate(p.DateReceived) + '</td>'
-        + '<td><strong>' + (p.JobName || "—") + '</strong>'
+        + '<td>' + (p.JobID ? '<a style="color:var(--accent);cursor:pointer;text-decoration:none;" onclick="openJobDetail(\'' + p.JobID + '\')"><strong>' + (p.JobName || "—") + '</strong></a>' : '<strong>' + (p.JobName || "—") + '</strong>')
         + (p.ClientName ? '<br><span style="color:var(--fg3);font-size:11px;">' + p.ClientName + '</span>' : '') + '</td>'
         + '<td><span class="badge badge-' + typeCls + '">' + (p.Type || "Payment") + '</span></td>'
         + '<td class="money">' + fmt$(p.GrossAmount) + '</td>'
@@ -1094,7 +1111,7 @@ function openPaymentEditor(payId, jobId) {
   var payMethods = getSetting("paymentMethods", ["Zelle", "GoDaddy", "Venmo", "PayPal", "Cash App", "Cash", "Check"]);
   var payTypes = ["Deposit", "Partial", "Final Payment"];
 
-  var html = '<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal"><h3>' + (isNew ? "Log payment" : "Edit payment") + '</h3>';
+  var html = '<div class="modal-overlay" onmousedown="if(event.target===this)closeModal()"><div class="modal"><h3>' + (isNew ? "Log payment" : "Edit payment") + '</h3>';
 
   html += '<div class="form-group"><label class="form-label">Job</label>'
     + '<select class="form-select" id="pJobID">';
@@ -1193,7 +1210,7 @@ async function deletePayment(id) {
 }
 
 function resolvePayment(jobId) {
-  var html = '<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:440px;">'
+  var html = '<div class="modal-overlay" onmousedown="if(event.target===this)closeModal()"><div class="modal" style="max-width:440px;">'
     + '<h3>Mark payment resolved</h3>'
     + '<div class="form-group"><label class="form-label">Reason</label>'
     + '<select class="form-select" id="resolveReason">'
@@ -1514,7 +1531,10 @@ function renderSettings() {
     html += '<div class="metric-card" style="margin-bottom:16px;">'
       + '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;">'
       + '<div class="metric-label">' + cat.label + '</div>'
-      + '<button class="btn btn-sm" onclick="addSettingItem(\'' + cat.key + '\')">+ Add</button></div>';
+      + '<div style="display:flex;gap:6px;">';
+    if (cat.key === "quarters") html += '<button class="btn btn-sm btn-accent" onclick="addNextQuarter()">+ Next quarter</button>';
+    html += '<button class="btn btn-sm" onclick="addSettingItem(\'' + cat.key + '\')">+ Add</button>'
+      + '</div></div>';
     html += '<div style="display:flex;flex-direction:column;gap:4px;">';
     items.forEach(function(item, idx) {
       html += '<div style="display:flex;align-items:center;gap:6px;padding:4px 8px;background:var(--bg3);border-radius:var(--radius);font-size:12px;">'
@@ -1550,11 +1570,9 @@ function openJobEditor(jobId) {
 
   var serviceTypes = getSetting("serviceTypes", ["Photography", "Videography", "Editing", "Mixed"]);
   var taxStatuses = getSetting("taxStatuses", ["Taxable", "Non-Profit", "Exempt", "Unknown"]);
-  var payMethods = getSetting("paymentMethods", ["Zelle", "GoDaddy", "Venmo", "PayPal", "Cash App", "Cash", "Check"]);
-  var payStatuses = getSetting("paymentStatuses", ["Unpaid", "Deposit", "Partial", "Paid"]);
   var pStages = pipelineStages();
 
-  var html = '<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal modal-wide"><h3>' + (isNew ? "New job" : "Edit job") + '</h3>';
+  var html = '<div class="modal-overlay" onmousedown="if(event.target===this)closeModal()"><div class="modal modal-wide"><h3>' + (isNew ? "New job" : "Edit job") + '</h3>';
 
   html += '<div class="form-row"><div class="form-group"><label class="form-label">Client name</label>'
     + '<input class="form-input" id="jClientName" value="' + (job.ClientName || "") + '"></div>'
@@ -1576,7 +1594,7 @@ function openJobEditor(jobId) {
     + '<input class="form-input" id="jClientLocation" value="' + (job.ClientLocation || "") + '"></div>';
 
   html += '<div class="form-group"><label class="form-label">Tax status</label>'
-    + '<select class="form-select" id="jTaxStatus">';
+    + '<select class="form-select" id="jTaxStatus" onchange="taxStatusChanged()">';
   taxStatuses.forEach(function(ts) { html += '<option' + (job.TaxStatus === ts ? ' selected' : '') + '>' + ts + '</option>'; });
   html += '</select></div></div>';
 
@@ -1587,24 +1605,24 @@ function openJobEditor(jobId) {
     + '<div class="form-group"><label class="form-label">Tax amount</label>'
     + '<input class="form-input" type="number" step="0.01" id="jTaxAmount" value="' + (job.TaxAmount || "") + '"></div></div>';
 
-  html += '<div class="form-row-3"><div class="form-group"><label class="form-label">Gross total</label>'
-    + '<input class="form-input" type="number" step="0.01" id="jGrossTotal" value="' + (job.GrossTotal || "") + '"></div>'
-    + '<div class="form-group"><label class="form-label">Processing fees</label>'
-    + '<input class="form-input" type="number" step="0.01" id="jProcessingFees" value="' + (job.ProcessingFees || "") + '" onchange="calcJobNet()"></div>'
-    + '<div class="form-group"><label class="form-label">Net received</label>'
-    + '<input class="form-input" type="number" step="0.01" id="jNetReceived" value="' + (job.NetReceived || "") + '"></div></div>';
+  // Billable expenses (added after tax)
+  var pData = {};
+  try { pData = typeof job.PipelineData === "object" ? job.PipelineData : JSON.parse(job.PipelineData || "{}"); } catch(e) {}
+  var billableItems = pData.billableItems || [];
 
-  html += '<div class="form-row-3"><div class="form-group"><label class="form-label">Payment method</label>'
-    + '<select class="form-select" id="jPaymentMethod"><option value="">—</option>';
-  payMethods.forEach(function(pm) { html += '<option' + (job.PaymentMethod === pm ? ' selected' : '') + '>' + pm + '</option>'; });
-  html += '</select></div>';
+  html += '<div class="form-group"><label class="form-label">Billable expenses <span style="font-weight:400;color:var(--fg3);text-transform:none;">(added after tax — flows into invoice)</span></label>'
+    + '<div id="jBillableItems">';
+  billableItems.forEach(function(item, idx) {
+    html += '<div style="display:flex;gap:8px;margin-bottom:6px;min-width:0;" class="billable-row">'
+      + '<input class="form-input" placeholder="Description (e.g. Mileage, Hotel)" value="' + (item.desc || "") + '" style="flex:2;min-width:0;">'
+      + '<input class="form-input" type="number" step="0.01" placeholder="Amount" value="' + (item.amount || 0) + '" style="flex:1;min-width:0;max-width:120px;" onchange="calcJobTotals()">'
+      + '<button class="btn btn-sm btn-danger" onclick="this.parentElement.remove();calcJobTotals()" style="flex-shrink:0;">&times;</button></div>';
+  });
+  html += '</div><button class="btn btn-sm" onclick="addJobBillableRow()">+ Add billable expense</button></div>';
 
-  html += '<div class="form-group"><label class="form-label">Payment status</label>'
-    + '<select class="form-select" id="jPaymentStatus">';
-  payStatuses.forEach(function(ps) { html += '<option' + (job.PaymentStatus === ps ? ' selected' : '') + '>' + ps + '</option>'; });
-  html += '</select></div>';
-
-  html += '<div class="form-group"><label class="form-label">Pipeline stage</label>'
+  html += '<div class="form-row"><div class="form-group"><label class="form-label">Gross total <span style="font-weight:400;color:var(--fg3);text-transform:none;">(base + tax + expenses)</span></label>'
+    + '<input class="form-input" type="number" step="0.01" id="jGrossTotal" value="' + (job.GrossTotal || "") + '" style="font-weight:600;"></div>'
+    + '<div class="form-group"><label class="form-label">Pipeline stage</label>'
     + '<select class="form-select" id="jPipelineStatus">';
   pStages.forEach(function(ps) { html += '<option' + (job.PipelineStatus === ps ? ' selected' : '') + '>' + ps + '</option>'; });
   html += '</select></div></div>';
@@ -1630,19 +1648,60 @@ function calcJobTotals() {
   var rate = parseFloat(document.getElementById("jTaxRate").value) || 0;
   var tax = Math.round(base * rate / 100 * 100) / 100;
   document.getElementById("jTaxAmount").value = tax;
-  document.getElementById("jGrossTotal").value = Math.round((base + tax) * 100) / 100;
-  calcJobNet();
+
+  // Sum billable expenses
+  var billableTotal = 0;
+  var rows = document.querySelectorAll("#jBillableItems .billable-row");
+  rows.forEach(function(row) {
+    var inputs = row.querySelectorAll("input");
+    billableTotal += parseFloat(inputs[1].value) || 0;
+  });
+
+  document.getElementById("jGrossTotal").value = Math.round((base + tax + billableTotal) * 100) / 100;
 }
 
-function calcJobNet() {
-  var gross = parseFloat(document.getElementById("jGrossTotal").value) || 0;
-  var fees = parseFloat(document.getElementById("jProcessingFees").value) || 0;
-  document.getElementById("jNetReceived").value = Math.round((gross - fees) * 100) / 100;
+function addJobBillableRow() {
+  var container = document.getElementById("jBillableItems");
+  var row = document.createElement("div");
+  row.style.cssText = "display:flex;gap:8px;margin-bottom:6px;min-width:0;";
+  row.className = "billable-row";
+  row.innerHTML = '<input class="form-input" placeholder="Description (e.g. Mileage, Hotel)" style="flex:2;min-width:0;">'
+    + '<input class="form-input" type="number" step="0.01" placeholder="Amount" value="0" style="flex:1;min-width:0;max-width:120px;" onchange="calcJobTotals()">'
+    + '<button class="btn btn-sm btn-danger" onclick="this.parentElement.remove();calcJobTotals()" style="flex-shrink:0;">&times;</button>';
+  container.appendChild(row);
+}
+
+function taxStatusChanged() {
+  var status = document.getElementById("jTaxStatus").value;
+  if (status === "Taxable") {
+    document.getElementById("jTaxRate").value = "8.25";
+  } else {
+    document.getElementById("jTaxRate").value = "0";
+  }
+  calcJobTotals();
 }
 
 async function saveJob() {
+  var jobId = document.getElementById("jID").value;
+  var existingJob = jobId ? S.jobs.find(function(j) { return j.ID === jobId; }) : null;
+
+  // Collect billable items
+  var billableItems = [];
+  var bRows = document.querySelectorAll("#jBillableItems .billable-row");
+  bRows.forEach(function(row) {
+    var inputs = row.querySelectorAll("input");
+    if (inputs[0].value || parseFloat(inputs[1].value)) {
+      billableItems.push({ desc: inputs[0].value, amount: parseFloat(inputs[1].value) || 0 });
+    }
+  });
+
+  // Merge billable items into PipelineData (preserve existing pipeline states)
+  var pipeData = existingJob ? (typeof existingJob.PipelineData === "object" ? existingJob.PipelineData : {}) : {};
+  try { if (typeof pipeData === "string") pipeData = JSON.parse(pipeData); } catch(e) { pipeData = {}; }
+  pipeData.billableItems = billableItems;
+
   var job = {
-    ID: document.getElementById("jID").value,
+    ID: jobId,
     ClientName: document.getElementById("jClientName").value,
     JobName: document.getElementById("jJobName").value,
     ServiceType: document.getElementById("jServiceType").value,
@@ -1654,12 +1713,14 @@ async function saveJob() {
     BaseCharge: document.getElementById("jBaseCharge").value,
     TaxAmount: document.getElementById("jTaxAmount").value,
     GrossTotal: document.getElementById("jGrossTotal").value,
-    ProcessingFees: document.getElementById("jProcessingFees").value,
-    NetReceived: document.getElementById("jNetReceived").value,
-    PaymentMethod: document.getElementById("jPaymentMethod").value,
-    PaymentStatus: document.getElementById("jPaymentStatus").value,
+    ProcessingFees: existingJob ? existingJob.ProcessingFees : 0,
+    NetReceived: existingJob ? existingJob.NetReceived : 0,
+    PaymentMethod: existingJob ? existingJob.PaymentMethod : "",
+    PaymentStatus: existingJob ? existingJob.PaymentStatus : "Unpaid",
     PipelineStatus: document.getElementById("jPipelineStatus").value,
-    PipelineData: {},
+    PipelineData: pipeData,
+    PaymentResolved: existingJob ? existingJob.PaymentResolved : false,
+    ResolvedReason: existingJob ? existingJob.ResolvedReason : "",
     ExpenseNotes: document.getElementById("jExpenseNotes").value,
     Notes: document.getElementById("jNotes").value
   };
@@ -1748,7 +1809,11 @@ async function updatePipeline(jobId, stageIdx) {
   var next = PIPE_CYCLE[(cycleIdx + 1) % PIPE_CYCLE.length];
   states[stage] = next;
 
-  job.PipelineData = states;
+  // Merge pipeline states back into PipelineData (preserve billableItems etc)
+  var fullPData = {};
+  try { fullPData = typeof job.PipelineData === "object" ? job.PipelineData : JSON.parse(job.PipelineData || "{}"); } catch(e) {}
+  stages.forEach(function(s) { fullPData[s] = states[s]; });
+  job.PipelineData = fullPData;
   // Update PipelineStatus for backward compat
   var labels = { pending: "Pending", current: "In Progress", done: "Done", na: "N/A" };
   job.PipelineStatus = stages[stageIdx] + " — " + labels[next];
@@ -1771,12 +1836,28 @@ function openInvoiceEditor(jobId, invId) {
   var isNew = !inv;
 
   if (isNew) {
+    // Build cost breakdown from job data including billable expenses
+    var invCostItems = [];
+    if (job) {
+      invCostItems.push({ desc: job.ServiceType || "Service", amount: parseFloat(job.BaseCharge) || 0 });
+      // Add billable items from job
+      var jobPData = {};
+      try { jobPData = typeof job.PipelineData === "object" ? job.PipelineData : JSON.parse(job.PipelineData || "{}"); } catch(e) {}
+      if (jobPData.billableItems && jobPData.billableItems.length) {
+        jobPData.billableItems.forEach(function(bi) {
+          if (bi.desc || bi.amount) invCostItems.push({ desc: bi.desc, amount: bi.amount });
+        });
+      }
+    } else {
+      invCostItems.push({ desc: "Service", amount: 0 });
+    }
+
     inv = {
       ID: "", InvoiceNumber: S.nextInvoiceNum, JobID: jobId || "",
       ClientName: job ? job.ClientName : "", BillToAddress: "",
       DateOfService: job ? job.EventDate : "", DateFiled: new Date().toISOString().split("T")[0],
       ServiceProvided: job ? job.ServiceType : "", Project: job ? job.JobName : "",
-      CostBreakdown: [{ desc: job ? (job.ServiceType || "Service") : "Service", amount: job ? (parseFloat(job.BaseCharge) || 0) : 0 }],
+      CostBreakdown: invCostItems,
       SalesTax: job ? (parseFloat(job.TaxAmount) || 0) : 0,
       Deposit: 0, TotalDue: job ? (parseFloat(job.GrossTotal) || 0) : 0,
       PaymentTerms: "N30", Status: "Draft", Notes: ""
@@ -1787,7 +1868,7 @@ function openInvoiceEditor(jobId, invId) {
   try { costItems = typeof inv.CostBreakdown === "object" ? inv.CostBreakdown : JSON.parse(inv.CostBreakdown || "[]"); } catch(e) {}
   if (!costItems.length) costItems = [{ desc: "", amount: 0 }];
 
-  var html = '<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal modal-wide"><h3>' + (isNew ? "Generate invoice" : "Edit invoice") + '</h3>';
+  var html = '<div class="modal-overlay" onmousedown="if(event.target===this)closeModal()"><div class="modal modal-wide"><h3>' + (isNew ? "Generate invoice" : "Edit invoice") + '</h3>';
 
   html += '<div class="form-row-3"><div class="form-group"><label class="form-label">Invoice #</label>'
     + '<input class="form-input" id="iNumber" value="' + inv.InvoiceNumber + '"></div>'
@@ -1926,7 +2007,7 @@ function openContractEditor(jobId, conId) {
     con = { ID: "", JobID: jobId || "", ClientName: job ? job.ClientName : "", ContractText: "", DateCreated: new Date().toISOString().split("T")[0], SignedLink: "", Status: "Draft", Notes: "" };
   }
 
-  var html = '<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal modal-wide"><h3>' + (isNew ? "New contract" : "Edit contract") + '</h3>';
+  var html = '<div class="modal-overlay" onmousedown="if(event.target===this)closeModal()"><div class="modal modal-wide"><h3>' + (isNew ? "New contract" : "Edit contract") + '</h3>';
 
   html += '<div class="form-row"><div class="form-group"><label class="form-label">Client name</label>'
     + '<input class="form-input" id="cClient" value="' + (con.ClientName || "") + '"></div>'
@@ -2000,7 +2081,7 @@ function openExpenseEditor(expId, jobId) {
 
   var expCats = getSetting("expenseCategories", ["Mileage", "Equipment", "Second Shooter", "Hotel", "Food", "Software", "Other"]);
 
-  var html = '<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal"><h3>' + (isNew ? "Log expense" : "Edit expense") + '</h3>';
+  var html = '<div class="modal-overlay" onmousedown="if(event.target===this)closeModal()"><div class="modal"><h3>' + (isNew ? "Log expense" : "Edit expense") + '</h3>';
 
   html += '<div class="form-row"><div class="form-group"><label class="form-label">Date</label>'
     + '<input class="form-input" type="date" id="eDate" value="' + (exp.Date || "") + '"></div>'
@@ -2081,7 +2162,7 @@ async function deleteExpense(id) {
 
 // ---- SETTINGS ACTIONS ----
 function addSettingItem(key) {
-  var html = '<div class="modal-overlay" onclick="if(event.target===this)closeModal()"><div class="modal" style="max-width:400px;">'
+  var html = '<div class="modal-overlay" onmousedown="if(event.target===this)closeModal()"><div class="modal" style="max-width:400px;">'
     + '<h3>Add item</h3>'
     + '<div class="form-group"><label class="form-label">' + key + '</label>'
     + '<input class="form-input" id="settingNewVal" placeholder="Enter new value..." autofocus></div>'
