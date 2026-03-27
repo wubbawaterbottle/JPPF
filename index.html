@@ -2315,21 +2315,8 @@ function loadDemoData() {
 
 // ---- INIT ----
 async function init() {
-  // Check for saved API URL
-  var savedUrl = localStorage.getItem("jppf_api_url");
-  if (savedUrl) API_URL = savedUrl;
-
-  if (API_URL === "YOUR_APPS_SCRIPT_URL_HERE") {
-    // Load demo data for preview
-    loadDemoData();
-    document.getElementById("loadingScreen").style.display = "none";
-    document.getElementById("app").style.display = "flex";
-    S.loaded = true;
-    S.view = "dashboard";
-    render();
-    toast("Demo mode — connect Google Sheets in Settings to go live");
-    return;
-  }
+  // Clear any old saved URL — the hardcoded one is the source of truth
+  localStorage.removeItem("jppf_api_url");
 
   var success = await loadAll();
   document.getElementById("loadingScreen").style.display = "none";
